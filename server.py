@@ -19,8 +19,10 @@ class RunRequest(BaseModel):
     code: str
     timeout: float = 5.0   # seconds
 
+import textwrap
 
 def worker_run(code: str, out_q: mp.Queue):
+    code = textwrap.dedent(code)
     """
     Worker process: executes REAL Python code with exec(),
     but also traces each executed line to produce step-by-step
