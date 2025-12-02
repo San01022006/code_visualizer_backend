@@ -23,8 +23,8 @@ class RunRequest(BaseModel):
 def worker_run(code: str, out_q: mp.Queue):
     """
     Worker process: executes REAL Python code with exec(),
-    captures stdout and variables, and returns them
-    in a 'steps' list compatible with your current client.
+    but also traces each executed line to produce step-by-step
+    data compatible with your visualizer (Prev / Next).
     """
     try:
         # Isolated execution environment
@@ -32,39 +32,84 @@ def worker_run(code: str, out_q: mp.Queue):
         local_ns: Dict[str, Any] = {}
 
         buf = io.StringIO()
+        code_lines = code.splitlines()
 
-        # Capture print() output
+        # Compile user code with a known filename
+        code_obj = compile(code, "<user_code>", "exec")
+
+        steps = []
+        outputs_so_far: list[str] = []
+
+        def snapshot_vars(frame_locals: Dict[str, Any]) -> Dict[str, Any]:
+            # Merge globals + locals, locals override
+            raw: Dict[str, Any] = {}
+            raw.update(global_ns)
+            raw.update(frame_locals)
+
+            snap: Dict[str, Any] = {}
+            for k, v in raw.items():
+                if k.startswith("__"):
+                    continue
+                try:
+                    json.dumps(v)  # test JSON serializability
+                    snap[k] = v
+                except TypeError:
+                    snap[k] = repr(v)
+            return snap
+
+        def tracer(frame, event, arg):
+            # Only trace lines from the user's code string
+            if frame.f_code.co_filename != "<user_code>":
+                return tracer
+
+            if event == "line":
+                lineno = frame.f_lineno
+                code_line = (
+                    code_lines[lineno - 1] if 1 <= lineno <= len(code_lines) else ""
+                )
+
+                # Update outputs_so_far from captured stdout
+                stdout_text = buf.getvalue()
+                all_out_lines = stdout_text.splitlines()
+                new_lines = all_out_lines[len(outputs_so_far):]
+                outputs_so_far.extend(new_lines)
+
+                vars_snapshot = snapshot_vars(frame.f_locals)
+
+                steps.append({
+                    "lineNo": lineno,
+                    "codeLine": code_line,
+                    "desc": f"Executing line {lineno}: {code_line.strip()}",
+                    "varsSnapshot": vars_snapshot,
+                    "outputs": list(outputs_so_far),
+                    "visualizations": []   # you can add custom visualizations later
+                })
+
+            return tracer
+
+        # Run code with stdout capture + tracer
         with contextlib.redirect_stdout(buf):
-            exec(code, global_ns, local_ns)
-
-        stdout_text = buf.getvalue()
-        output_lines = stdout_text.splitlines()
-
-        # Collect variables (exclude internals)
-        raw_vars: Dict[str, Any] = {
-            k: v for k, v in local_ns.items() if not k.startswith("__")
-        }
-
-        # Make values JSON-serializable
-        vars_snapshot: Dict[str, Any] = {}
-        for k, v in raw_vars.items():
+            sys.settrace(tracer)
             try:
-                json.dumps(v)  # test JSON serializability
-                vars_snapshot[k] = v
-            except TypeError:
-                vars_snapshot[k] = repr(v)
+                exec(code_obj, global_ns, local_ns)
+            finally:
+                sys.settrace(None)
 
-        # Build a single "step" like your old structure
-        step = {
-            "lineNo": 0,
-            "codeLine": "",
-            "desc": "Execution finished",
-            "varsSnapshot": vars_snapshot,
-            "outputs": output_lines,
-            "visualizations": []
-        }
+        # If for some reason we got no steps (e.g., empty code),
+        # still return something.
+        if not steps:
+            stdout_text = buf.getvalue()
+            outputs_so_far[:] = stdout_text.splitlines()
+            steps.append({
+                "lineNo": 0,
+                "codeLine": "",
+                "desc": "Execution finished",
+                "varsSnapshot": snapshot_vars({}),
+                "outputs": list(outputs_so_far),
+                "visualizations": []
+            })
 
-        out_q.put({"status": "ok", "steps": [step]})
+        out_q.put({"status": "ok", "steps": steps})
 
     except Exception as e:
         out_q.put({
