@@ -97,16 +97,22 @@ class ExprEvaluator:
         # fallback: arithmetic expression
         return self.evalArithmetic(s)
 
-    def eval_fstring(self, body: str):
-        # Replace {...} expressions inside the f-string by evaluated values
-        def repl(match):
-            expr = match.group(1)
-            val = self.evalExpr(expr)
-            # For f-strings, convert lists and others to readable repr
+    def eval_fstring(self, body: str) -> str:
+        import re
+
+        def repl(m):
+            inner = m.group(1)
+            val = self.evalExpr(inner)
             if isinstance(val, str):
                 return val
-            return self.repr_value(val)
-        return re.sub(r'\{([^}]+)\}', repl, body)
+            if isinstance(val, list):
+                return str(val)
+            if val is None:
+                return "null"
+            return str(val)
+
+        # replaces {expr} with evaluated value
+        return re.sub(r"\{([^}]+)\}", repl, body)
 
     def handleMethodCall(self, obj, methodName: str, args: str, objName: str):
         if isinstance(obj, list):
