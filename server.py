@@ -27,6 +27,10 @@ def worker_run(code: str, out_q: mp.Queue):
     """
     # Remove common leading indentation from the whole code block
     code = textwrap.dedent(code)
+    print("=== RECEIVED CODE START ===")
+    print(code)
+    print("=== RECEIVED CODE END ===")
+
 
     try:
         # Isolated execution environment
