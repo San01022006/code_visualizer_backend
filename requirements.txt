@@ -1,3 +1,17 @@
+# --- Core server libraries ---
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
+
+# --- Scientific / Data libraries ---
+numpy
+pandas
+
+# --- Visualization graph library ---
+matplotlib
+
+# --- Graph algorithms (A*, BFS, DFS, shortest path, etc.) ---
+networkx
+
+# --- Optional useful utilities ---
+python-multipart
