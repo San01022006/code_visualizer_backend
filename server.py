@@ -27,15 +27,11 @@ def worker_run(code: str, out_q: mp.Queue):
     """
     # Remove common leading indentation from the whole code block
     code = textwrap.dedent(code)
-    print("=== RECEIVED CODE START ===")
-    print(code)
-    print("=== RECEIVED CODE END ===")
-
 
     try:
-        # Isolated execution environment
+        # Use ONE shared namespace for globals and locals
         global_ns: Dict[str, Any] = {"__builtins__": __builtins__}
-        local_ns: Dict[str, Any] = {}
+        local_ns = global_ns
 
         buf = io.StringIO()
         code_lines = code.splitlines()
@@ -64,7 +60,6 @@ def worker_run(code: str, out_q: mp.Queue):
             return snap
 
         def tracer(frame, event, arg):
-            # Only trace the user's code, not FastAPI internals, etc.
             if frame.f_code.co_filename != "<user_code>":
                 return tracer
 
@@ -74,7 +69,6 @@ def worker_run(code: str, out_q: mp.Queue):
                     code_lines[lineno - 1] if 1 <= lineno <= len(code_lines) else ""
                 )
 
-                # Update outputs_so_far from captured stdout
                 stdout_text = buf.getvalue()
                 all_out_lines = stdout_text.splitlines()
                 new_lines = all_out_lines[len(outputs_so_far):]
@@ -93,18 +87,16 @@ def worker_run(code: str, out_q: mp.Queue):
                     }
                 )
 
-            # Continue tracing into nested calls (like recursion)
             return tracer
 
         # Run the code with stdout captured and tracing enabled
         with contextlib.redirect_stdout(buf):
             sys.settrace(tracer)
             try:
-                exec(code_obj, global_ns, local_ns)
+                exec(code_obj, global_ns, local_ns)  # <--- locals == globals
             finally:
                 sys.settrace(None)
 
-        # If somehow no steps were recorded, add a final summary step
         if not steps:
             stdout_text = buf.getvalue()
             outputs_so_far[:] = stdout_text.splitlines()
@@ -129,7 +121,6 @@ def worker_run(code: str, out_q: mp.Queue):
                 "trace": traceback.format_exc(),
             }
         )
-
 
 @app.post("/run")
 def run_code(req: RunRequest):
