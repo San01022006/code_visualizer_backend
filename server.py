@@ -5,6 +5,10 @@ from typing import Any, Dict
 import multiprocessing as mp
 import time
 import traceback
+import io
+import sys
+import contextlib
+import json
 
 from mini_interpreter import MiniInterpreter, StepEvent
 
@@ -18,31 +22,56 @@ class RunRequest(BaseModel):
 
 def worker_run(code: str, out_q: mp.Queue):
     """
-    Worker process: runs the MiniInterpreter in a separate process so that
-    infinite loops or very long executions can be killed after a timeout.
+    Worker process: executes REAL Python code with exec(),
+    captures stdout and variables, and returns them
+    in a 'steps' list compatible with your current client.
     """
     try:
-        interp = MiniInterpreter(code)
-        interp.runAll()
-        # Convert StepEvent dataclass objects to dicts
-        steps = []
-        for s in interp.steps:
-            steps.append({
-                "lineNo": s.lineNo,
-                "codeLine": s.codeLine,
-                "desc": s.desc,
-                "varsSnapshot": s.varsSnapshot,
-                "outputs": s.outputs,
-                "visualizations": s.visualizations
-            })
-        out_q.put({"status": "ok", "steps": steps})
+        # Isolated execution environment
+        global_ns: Dict[str, Any] = {"__builtins__": __builtins__}
+        local_ns: Dict[str, Any] = {}
+
+        buf = io.StringIO()
+
+        # Capture print() output
+        with contextlib.redirect_stdout(buf):
+            exec(code, global_ns, local_ns)
+
+        stdout_text = buf.getvalue()
+        output_lines = stdout_text.splitlines()
+
+        # Collect variables (exclude internals)
+        raw_vars: Dict[str, Any] = {
+            k: v for k, v in local_ns.items() if not k.startswith("__")
+        }
+
+        # Make values JSON-serializable
+        vars_snapshot: Dict[str, Any] = {}
+        for k, v in raw_vars.items():
+            try:
+                json.dumps(v)  # test JSON serializability
+                vars_snapshot[k] = v
+            except TypeError:
+                vars_snapshot[k] = repr(v)
+
+        # Build a single "step" like your old structure
+        step = {
+            "lineNo": 0,
+            "codeLine": "",
+            "desc": "Execution finished",
+            "varsSnapshot": vars_snapshot,
+            "outputs": output_lines,
+            "visualizations": []
+        }
+
+        out_q.put({"status": "ok", "steps": [step]})
+
     except Exception as e:
         out_q.put({
             "status": "error",
             "message": str(e),
             "trace": traceback.format_exc()
         })
-
 
 @app.post("/run")
 def run_code(req: RunRequest):
