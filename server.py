@@ -63,7 +63,8 @@ def worker_run(code: str, out_q: mp.Queue):
             if frame.f_code.co_filename != "<user_code>":
                 return tracer
 
-            if event == "line":
+            if event in ("line", "return"):
+                sys.stdout.flush()
                 lineno = frame.f_lineno
                 code_line = (
                     code_lines[lineno - 1] if 1 <= lineno <= len(code_lines) else ""
